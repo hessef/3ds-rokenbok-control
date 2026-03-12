@@ -1,0 +1,210 @@
+    BasicInfo:
+        Title                   : "Rokenbok Control"      # Display name shown for the app
+        CompanyCode             : "00"                    # Homebrew commonly uses "00"
+        ProductCode             : "CTR-P-ROKB"            # Must match your Makefile/makerom setup
+        ContentType             : Application             # Normal installable application
+        Logo                    : Homebrew                # Use Homebrew logo since this is. ya know. homebrew
+
+
+    TitleInfo:
+        Category                : Application             # Normal app category
+        UniqueId                : 0xE9001                 # Must match makefile
+        Version                 : 0                       # App version number for the title
+
+    Option:
+        UseOnSD                 : true                    # Install/run from SD card
+        FreeProductCode         : true                    # Removes normal retail restrictions on ProductCode
+        MediaFootPadding        : false                   # Usually false for homebrew CIAs
+        EnableCrypt             : false                   # This is open source anyway lmao
+        EnableCompress          : true                    # Compress code where applicable
+
+    AccessControlInfo:
+        CoreVersion             : 2                       # Exheader format version
+        DescVersion             : 2                       # Descriptor format version
+
+        # These kernel version fields are used in the reference video player RSF.
+        ReleaseKernelMajor      : "02"
+        ReleaseKernelMinor      : "44"
+
+        # Save/extdata settings
+        UseExtSaveData          : false
+
+        FileSystemAccess:
+            - DirectSdmc                                    # More direct SD access; useful for media/data files
+            - DirectSdmcWrite                               # Allows writing to SD if needed later
+
+        IoAccessControl:
+            - UseSdif3                                      # SD interface access; present in the video player RSF
+
+        # General process settings
+        MemoryType              : Application             # Standard application memory type
+        SystemMode              : 64MB                    # Base app memory mode
+
+        IdealProcessor          : 0                       # Preferred core affinity baseline
+        AffinityMask            : 1                       # Allowed CPU affinity mask
+        Priority                : 16                      # Thread/process priority baseline
+        MaxCpu                  : 0xFF                    # CPU time cap
+        HandleTableSize         : 0x200                   # Max number of kernel handles
+
+        DisableDebug            : false                   # Leave debug features enabled for development
+        EnableForceDebug        : false                   # Usually false unless you specifically need it
+        CanWriteSharedPage      : true                    # Used by the reference media app; can help with shared memory scenarios
+        CanUsePrivilegedPriority: false                   # Not needed
+        CanUseNonAlphabetAndNumber: true                  # Allows broader argument/title formatting behavior
+        PermitMainFunctionArgument : true                 # Lets app receive main() arguments
+        CanShareDeviceMemory    : true                    # Helpful for media pipelines/shared buffers
+        RunnableOnSleep         : false                   # App will not keep running in sleep mode
+
+        # Important New 3DS / media-related settings
+        SpecialMemoryArrange    : true                    # Used by the video player for New 3DS-style media memory layout
+        SystemModeExt           : 124MB                   # New 3DS extended memory mode
+        CpuSpeed                : 804MHz                  # Enables New 3DS higher CPU clock
+        EnableL2Cache           : true                    # Enables New 3DS L2 cache
+        CanAccessCore2          : true                    # Allows use of the extra New 3DS core
+
+        # Memory mappings used by the reference video player.
+        IORegisterMapping:
+            - 1ff00000-1ff7ffff                             # DSP memory mapping
+
+        MemoryMapping:
+            - 1f000000-1f5fffff:r                           # VRAM mapping, read access
+
+        SystemCallAccess:
+            ControlMemory              : 1                  # Allocate / free / control virtual memory
+            QueryMemory                : 2                  # Query information about memory regions
+            ExitProcess                : 3                  # Terminate the process
+            GetProcessAffinityMask     : 4                  # Read process CPU affinity
+            SetProcessAffinityMask     : 5                  # Set process CPU affinity
+            GetProcessIdealProcessor   : 6                  # Read preferred CPU
+            SetProcessIdealProcessor   : 7                  # Set preferred CPU
+            CreateThread               : 8                  # Create a new thread
+            ExitThread                 : 9                  # Exit the current thread
+            SleepThread                : 10                 # Sleep/yield a thread
+            GetThreadPriority          : 11                 # Read thread priority
+            SetThreadPriority          : 12                 # Change thread priority
+            GetThreadAffinityMask      : 13                 # Read thread affinity
+            SetThreadAffinityMask      : 14                 # Set thread affinity
+            GetThreadIdealProcessor    : 15                 # Read thread ideal processor
+            SetThreadIdealProcessor    : 16                 # Set thread ideal processor
+            GetCurrentProcessorNumber  : 17                 # Get current CPU/core number
+            Run                        : 18                 # Run scheduler-related operation
+            CreateMutex                : 19                 # Create mutex
+            ReleaseMutex               : 20                 # Release mutex
+            CreateSemaphore            : 21                 # Create semaphore
+            ReleaseSemaphore           : 22                 # Release semaphore
+            CreateEvent                : 23                 # Create event object
+            SignalEvent                : 24                 # Signal event
+            ClearEvent                 : 25                 # Clear/reset event
+            CreateTimer                : 26                 # Create timer
+            SetTimer                   : 27                 # Configure timer
+            CancelTimer                : 28                 # Cancel timer
+            ClearTimer                 : 29                 # Clear timer state
+            CreateMemoryBlock          : 30                 # Create shared memory block
+            MapMemoryBlock             : 31                 # Map shared memory block
+            UnmapMemoryBlock           : 32                 # Unmap shared memory block
+            CreateAddressArbiter       : 33                 # Create address arbiter
+            ArbitrateAddress           : 34                 # Use address arbiter
+            CloseHandle                : 35                 # Close kernel handle
+            WaitSynchronization1       : 36                 # Wait on one handle
+            WaitSynchronizationN       : 37                 # Wait on multiple handles
+            SignalAndWait              : 38                 # Signal one object and wait on another
+            DuplicateHandle            : 39                 # Duplicate handle
+            GetSystemTick              : 40                 # Read system tick counter
+            GetHandleInfo              : 41                 # Query handle info
+            GetSystemInfo              : 42                 # Query system info
+            GetProcessInfo             : 43                 # Query process info
+            GetThreadInfo              : 44                 # Query thread info
+            ConnectToPort              : 45                 # Connect to service port
+            SendSyncRequest1           : 46                 # IPC request variant
+            SendSyncRequest2           : 47                 # IPC request variant
+            SendSyncRequest3           : 48                 # IPC request variant
+            SendSyncRequest4           : 49                 # IPC request variant
+            SendSyncRequest            : 50                 # Generic IPC request
+            OpenProcess                : 51                 # Open process handle
+            OpenThread                 : 52                 # Open thread handle
+            GetProcessId               : 53                 # Get process ID
+            GetProcessIdOfThread       : 54                 # Get owning process ID of thread
+            GetThreadId                : 55                 # Get thread ID
+            GetResourceLimit           : 56                 # Access resource limit object
+            GetResourceLimitLimitValues: 57                 # Read configured resource limits
+            GetResourceLimitCurrentValues: 58               # Read current resource usage
+            GetThreadContext           : 59                 # Read thread CPU context
+            Break                      : 60                 # Trigger debug break
+            OutputDebugString          : 61                 # Print debug string
+            ControlPerformanceCounter  : 62                 # Performance counter control
+            CreatePort                 : 71                 # Create IPC port
+            CreateSessionToPort        : 72                 # Create session to port
+            CreateSession              : 73                 # Create IPC session pair
+            AcceptSession              : 74                 # Accept IPC session
+            ReplyAndReceive1           : 75                 # IPC reply/receive variant
+            ReplyAndReceive2           : 76                 # IPC reply/receive variant
+            ReplyAndReceive3           : 77                 # IPC reply/receive variant
+            ReplyAndReceive4           : 78                 # IPC reply/receive variant
+            ReplyAndReceive            : 79                 # Generic IPC reply/receive
+            BindInterrupt              : 80                 # Bind interrupt
+            UnbindInterrupt            : 81                 # Unbind interrupt
+            InvalidateProcessDataCache : 82                 # Invalidate process data cache
+            StoreProcessDataCache      : 83                 # Store process data cache
+            FlushProcessDataCache      : 84                 # Flush process data cache
+            StartInterProcessDma       : 85                 # Start DMA between processes
+            StopDma                    : 86                 # Stop DMA
+            GetDmaState                : 87                 # Query DMA state
+            RestartDma                 : 88                 # Restart DMA
+            DebugActiveProcess         : 96                 # Attach debugger to process
+            BreakDebugProcess          : 97                 # Break a debugged process
+            TerminateDebugProcess      : 98                 # Terminate a debugged process
+            GetProcessDebugEvent       : 99                 # Read debug event
+            ContinueDebugEvent         : 100                # Continue debugged process
+            GetProcessList             : 101                # Enumerate processes
+            GetThreadList              : 102                # Enumerate threads
+            GetDebugThreadContext      : 103                # Read debug thread context
+            SetDebugThreadContext      : 104                # Write debug thread context
+            QueryDebugProcessMemory    : 105                # Query memory of debugged process
+            ReadProcessMemory          : 106                # Read memory of debugged process
+            WriteProcessMemory         : 107                # Write memory of debugged process
+            SetHardwareBreakPoint      : 108                # Set HW breakpoint
+            GetDebugThreadParam        : 109                # Read debug thread parameter
+            ControlProcessMemory       : 112                # Advanced process memory control
+            MapProcessMemory           : 113                # Map process memory
+            UnmapProcessMemory         : 114                # Unmap process memory
+            CreateCodeSet              : 115                # Create codeset
+            CreateProcess              : 117                # Create process
+            TerminateProcess           : 118                # Terminate process
+            SetProcessResourceLimits   : 119                # Apply resource limits to process
+            CreateResourceLimit        : 120                # Create resource limit object
+            SetResourceLimitValues     : 121                # Set resource limit values
+            AddCodeSegment             : 122                # Add code segment
+            Backdoor                   : 123                # Kernel backdoor syscall
+            KernelSetState             : 124                # Set kernel state
+            QueryProcessMemory         : 125                # Query process memory
+
+        ServiceAccessControl:
+            - APT:U                                         # App lifecycle / system applet access
+            - fs:USER                                       # Filesystem access
+            - gsp::Gpu                                      # GPU/display access
+            - hid:USER                                      # Buttons / input
+            - ndm:u                                         # Network daemon management
+            - soc:U                                         # Sockets / networking
+            - y2r:u                                         # YUV-to-RGB color conversion hardware
+            - mvd:STD                                       # Hardware video decoder service
+            - ac:u                                          # Network connection management
+            - ssl:C                                         # Useful later if you stream over TLS/HTTPS
+            - http:C                                        # Useful later if you switch to HTTP-based streaming
+
+    SystemControlInfo:
+        SaveDataSize            : 0KB                     # No save data yet; must be size-formatted
+        RemasterVersion         : 0                       # Title remaster version
+        StackSize               : 0x40000                 # 256 KB stack
+
+        Dependency:
+            ac: 0x0004013000002402                        # Network connection manager
+            cfg: 0x0004013000001702                       # System configuration
+            codec: 0x0004013000001802                     # Codec module used by media stack
+            dsp: 0x0004013000001a02                       # DSP module
+            gsp: 0x0004013000001c02                       # GPU/display system module
+            hid: 0x0004013000001d02                       # Input system module
+            http: 0x0004013000002902                      # HTTP system module
+            mvd: 0x0004013020004102                       # Hardware video decode module
+            ndm: 0x0004013000002b02                       # Network daemon module
+            socket: 0x0004013000002e02                    # Socket system module
+            ssl: 0x0004013000002f02                       # SSL/TLS system module

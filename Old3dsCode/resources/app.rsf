@@ -1,0 +1,105 @@
+BasicInfo:
+  Title                   : "Rokenbok Control"      # Display name shown for the app
+  CompanyCode             : "00"                    # Homebrew commonly uses "00"
+  ProductCode             : "CTR-P-ROKB"            # Must match your Makefile/makerom setup
+  ContentType             : Application             # Normal installable application
+  Logo                    : Homebrew                # Use Homebrew logo since this is. ya know. homebrew
+
+# Optional RomFS block.
+# Uncomment this if you later add a romfs folder and pass it to makerom.
+# RomFs:
+#   RootPath              : romfs
+
+TitleInfo:
+  Category                : Application             # Normal app category
+  UniqueId                : 0xE9001                 # Must match makefile
+  Version                 : 0                       # App version number for the title
+
+Option:
+  UseOnSD                 : true                    # Install/run from SD card
+  FreeProductCode         : true                    # Removes normal retail restrictions on ProductCode
+  MediaFootPadding        : false                   # Usually false for homebrew CIAs
+  EnableCrypt             : false                   # This is open source anyway lmao
+  EnableCompress          : true                    # Compress code where applicable
+
+AccessControlInfo:
+  CoreVersion             : 2                       # Exheader format version
+  DescVersion             : 2                       # Descriptor format version
+
+  # These kernel version fields are used in the reference video player RSF.
+  ReleaseKernelMajor      : "02"
+  ReleaseKernelMinor      : "44"
+
+  # Save/extdata settings
+  UseExtSaveData          : false
+
+  FileSystemAccess:
+    - DirectSdmc                                    # More direct SD access; useful for media/data files
+    - DirectSdmcWrite                               # Allows writing to SD if needed later
+
+  IoAccessControl:
+    - UseSdif3                                      # SD interface access; present in the video player RSF
+
+  # General process settings
+  MemoryType              : Application             # Standard application memory type
+  SystemMode              : 64MB                    # Base app memory mode
+
+  IdealProcessor          : 0                       # Preferred core affinity baseline
+  AffinityMask            : 1                       # Allowed CPU affinity mask
+  Priority                : 16                      # Thread/process priority baseline
+  MaxCpu                  : 0xFF                    # CPU time cap
+  HandleTableSize         : 0x200                   # Max number of kernel handles
+
+  DisableDebug            : false                   # Leave debug features enabled for development
+  EnableForceDebug        : false                   # Usually false unless you specifically need it
+  CanWriteSharedPage      : true                    # Used by the reference media app; can help with shared memory scenarios
+  CanUsePrivilegedPriority: false                   # Not needed
+  CanUseNonAlphabetAndNumber: true                  # Allows broader argument/title formatting behavior
+  PermitMainFunctionArgument : true                 # Lets app receive main() arguments
+  CanShareDeviceMemory    : true                    # Helpful for media pipelines/shared buffers
+  RunnableOnSleep         : false                   # App will not keep running in sleep mode
+
+  # Important New 3DS / media-related settings
+  SpecialMemoryArrange    : true                    # Used by the video player for New 3DS-style media memory layout
+  SystemModeExt           : 124MB                   # New 3DS extended memory mode
+  CpuSpeed                : 804MHz                  # Enables New 3DS higher CPU clock
+  EnableL2Cache           : true                    # Enables New 3DS L2 cache
+  CanAccessCore2          : true                    # Allows use of the extra New 3DS core
+
+  # Memory mappings used by the reference video player.
+  IORegisterMapping:
+    - 1ff00000-1ff7ffff                             # DSP memory mapping
+
+  MemoryMapping:
+    - 1f000000-1f5fffff:r                           # VRAM mapping, read access
+
+  ServiceAccessControl:
+    - APT:U                                         # App lifecycle / system applet access
+    - fs:USER                                       # Filesystem access
+    - gsp::Gpu                                      # GPU/display access
+    - hid:USER                                      # Buttons / input
+    - ndm:u                                         # Network daemon management
+    - soc:U                                         # Sockets / networking
+    - y2r:u                                         # YUV-to-RGB color conversion hardware
+    - mvd:STD                                       # Hardware video decoder service
+    - ac:u                                          # Network connection management
+    - ssl:C                                         # Useful later if you stream over TLS/HTTPS
+    - http:C                                        # Useful later if you switch to HTTP-based streaming
+
+SystemControlInfo:
+  SaveDataSize            : 0KB                     # No save data yet; must be size-formatted
+  RemasterVersion         : 0                       # Title remaster version
+  StackSize               : 0x40000                 # 256 KB stack
+
+  Dependency:
+    ac: 0x0004013000002402                        # Network connection manager
+    cfg: 0x0004013000001702                       # System configuration
+    codec: 0x0004013000001802                     # Codec module used by media stack
+    dsp: 0x0004013000001a02                       # DSP module
+    gsp: 0x0004013000001c02                       # GPU/display system module
+    hid: 0x0004013000001d02                       # Input system module
+    http: 0x0004013000002902                      # HTTP system module
+    mvd: 0x0004013020004102                       # Hardware video decode module
+    ndm: 0x0004013000002b02                       # Network daemon module
+    socket: 0x0004013000002e02                    # Socket system module
+    ssl: 0x0004013000002f02                       # SSL/TLS system module

@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build 3DS",
+      "type": "shell",
+      "command": "C:\\devkitPro\\msys2\\usr\\bin\\bash.exe",
+      "args": [
+        "-lc",
+        "cd /c/Users/there/Documents/RokenbokControl/3dsCode && make"
+      ],
+      "problemMatcher": "$gcc",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

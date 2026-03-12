@@ -1,7 +1,5 @@
 /*
-  Rokenbok controller emulator
-
-  Only works with single command at a time, cannot handle multiple inputs at once.
+  Rokenbok controller emulator - multiple input version
 */
 
 const uint8_t syncPin = 2;   // external interrupt
@@ -10,8 +8,10 @@ const uint8_t clkPin  = 4;   // pin change interrupt
 const uint8_t dataPin = 8;
 const uint8_t ledPin  = 13;
 
-// Current command from PC
-volatile char currentCommand = '!';
+//command mask
+uint8_t rxBuffer[2];
+uint8_t rxIndex = 0;
+uint16_t commandMask;
 
 // Frame state
 volatile bool frameActive = false;
@@ -19,46 +19,6 @@ volatile uint8_t pulseCount = 0;
 
 // Track D4 for pin-change edge detection
 volatile uint8_t lastPortDState = 0;
-
-// --------------------------------------------------
-// Helper: return true if DATA should be active on this pulse
-// --------------------------------------------------
-bool shouldPulseData(char cmd, uint8_t pulse)
-{
-  switch (cmd)
-  {
-    case '0': // select
-      return (pulse == 0);
-
-    case 'w': // forward
-      return (pulse == 6);
-
-    case 's': // backward
-      return (pulse == 7);
-
-    case 'd': // right
-      return (pulse == 8);
-
-    case 'a': // left
-      return (pulse == 9);
-
-    case 'i': // lift down
-      return (pulse == 10);
-
-    case 'k': // lift up
-      return (pulse == 11);
-
-    case '4': // grab close
-      return (pulse == 12);
-
-    case '6': // grab open
-      return (pulse == 13);
-
-    case '!': // idle
-    default:
-      return false;
-  }
-}
 
 void setup()
 {
@@ -85,9 +45,14 @@ void setup()
 void loop()
 {
   // Read commands from PC
-  while (Serial.available() > 0)
+  while (Serial.available())
   {
-    currentCommand = Serial.read();
+    rxBuffer[rxIndex++] = Serial.read();
+    if (rxIndex == 2)
+    {
+      commandMask = ((uint16_t)rxBuffer[0] << 8) | rxBuffer[1];
+      rxIndex = 0;
+    }
   }
 }
 
@@ -104,16 +69,18 @@ inline void handleClockFallingEdge()
   if (!frameActive)
     return;
 
-  //default LOW first
-  PORTB &= ~(1 << PB0);
   pulseCount++;
 }
 
 inline void handleClockRisingEdge()
 {
-  if (shouldPulseData(currentCommand, pulseCount))
+  if (commandMask & (1 << pulseCount))
   {
     PORTB |= (1 << PB0);
+  }
+  else
+  {
+    PORTB &= ~(1 << PB0);
   }
 
   // End frame after expected number of pulses

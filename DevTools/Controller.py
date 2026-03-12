@@ -23,6 +23,9 @@ BAUD_RATE = 250000
 # How often to send command updates (times per second)
 SEND_RATE_HZ = 30
 
+#whether to operate in single command mode or multipile command mode
+MULTI_COMMAND = True
+
 
 # ============================================================
 # Key-to-command mapping
@@ -80,45 +83,74 @@ def get_active_command(keys_pressed: pygame.key.ScancodeWrapper) -> str:
 
     return IDLE_COMMAND
 
-def get_held_buttons(keys_pressed: pygame.key.ScancodeWrapper) -> str:
+# ============================================================
+# Identify which buttons are held down now
+# ============================================================
+
+def get_held_buttons(keys_pressed: pygame.key.ScancodeWrapper) -> list[bool]:
     """
     returns a 16 character string that holds the status of the keys
     placement is based on pulse timing
     """
 
-    working_list = list("!!!!!!!!!!!!!!!!")
+    working_list = [False, False, False, False, False, False, False, False,
+                    False, False, False, False, False, False, False, False]
 
+    #select button
     if keys_pressed[pygame.K_SPACE]:
-        working_list[0] = '0'
+        working_list[14] = True
 
+    #dpad up
     if keys_pressed[pygame.K_w]:
-        working_list[7] = 'w'
+        working_list[9] = True
 
+    #dpad down
     if keys_pressed[pygame.K_s]:
-        working_list[8] = 's'
-
-    if keys_pressed[pygame.K_a]:
-        working_list[10] = 'a'
+        working_list[8] = True
     
+    #dpad right
     if keys_pressed[pygame.K_d]:
-        working_list[9] = 'd'
+        working_list[7] = True
+
+    #dpad left
+    if keys_pressed[pygame.K_a]:
+        working_list[6] = True
 
     if keys_pressed[pygame.K_i]:
-        working_list[11] = 'i'
+        working_list[5] = True
 
     if keys_pressed[pygame.K_k]:
-        working_list[6] = 'k'
+        working_list[4] = True
 
     if keys_pressed[pygame.K_j]:
-        working_list[12] = 'j'
+        working_list[0] = True
 
     if keys_pressed[pygame.K_l]:
-        working_list[13] = 'l'
+        working_list[1] = True
 
-    #rejoin list
-    output = "".join(working_list)
+    output = bool_aray_to_bytes(working_list)
 
     return output
+
+# ============================================================
+# Convert array of bools into raw bytes
+# ============================================================
+
+def bool_aray_to_bytes(arr):
+    #output needs to be a multiple of 8, so add padding as necessary
+    padding = (8 - len(arr) % 8) % 8
+    padded_arr = arr + [False] * padding
+
+    #create byte array
+    byte_arr = bytearray()
+    for i in range(0, len(padded_arr), 8): #from 0 to last index, increment by 8
+        byte = 0
+        for j in range(8):
+            if padded_arr[i+j]:
+                byte |= (1 << (7 - j))
+        byte_arr.append(byte)
+    return byte_arr
+
 
 
 # ============================================================
@@ -179,19 +211,28 @@ def main():
             # Read current keyboard state
             # ------------------------------------------------
             keys = pygame.key.get_pressed()
-            command = get_active_command(keys)
-            #command = get_held_buttons(keys)
+            if MULTI_COMMAND:
+                command = get_held_buttons(keys)
 
-            # ------------------------------------------------
-            # Send command if changed, or periodically resend it
-            # ------------------------------------------------
-            # Re-sending helps keep the Arduino updated while a key is held.
-            if command != last_command_sent:
-                ser.write(command.encode('ascii'))
-                last_command_sent = command
-                print(f"Sent command: {repr(command)}")
+                if command != last_command_sent:
+                    ser.write(command)
+                    last_command_sent = command
+                    print(f"Sent command: {command}")
+                else:
+                    ser.write(command)
             else:
-                ser.write(command.encode('ascii'))
+                command = get_active_command(keys)
+
+                # ------------------------------------------------
+                # Send command if changed, or periodically resend it
+                # ------------------------------------------------
+                # Re-sending helps keep the Arduino updated while a key is held.
+                if command != last_command_sent:
+                    ser.write(command.encode('ascii'))
+                    last_command_sent = command
+                    print(f"Sent command: {repr(command)}")
+                else:
+                    ser.write(command.encode('ascii'))
 
             # ------------------------------------------------
             # Optional: read back any Arduino serial output

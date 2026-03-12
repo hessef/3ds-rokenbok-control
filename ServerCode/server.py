@@ -7,13 +7,14 @@ import time
 import serial
 import socket
 import struct
-from pathlib import Path
 import subprocess
 from typing import List
 import multiprocessing as mp
-from multiprocessing import shared_memory as sm
 
 #=========================CONFIGURATION SETTINGS=========================
+
+#user settings
+STREAM_VIDEO = True     #change this to false if running the verion without video streaming
 
 #serial connection
 SERIAL_PORT = "COM5"
@@ -52,10 +53,11 @@ def shutdown(ser):
     #shutdown serial connection
     ser.close()
 
-    #shutdown daemon process
-    stream_proc.terminate()
-    time.sleep(0.25)
-    stream_proc.close()
+    if STREAM_VIDEO:
+        #shutdown daemon process
+        stream_proc.terminate()
+        time.sleep(0.25)
+        stream_proc.close()
 
     print("[CONTROL] Done!")
 
@@ -115,8 +117,8 @@ def queue_complete_nal_units(rolling: bytes, nal_queue: List[bytes]) -> bytes:
 
         start_i = start_next
 
-        #keep the remainder starting from last start code (incomplete NAL)
-        return rolling[start_i:]
+    #keep the remainder starting from last start code (incomplete NAL)
+    return rolling[start_i:]
 #==================================================
 
 
@@ -166,7 +168,7 @@ def video_server_main():
     #create TCP server socket
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", PORT))
+    srv.bind(("0.0.0.0", VIDEO_PORT))
     srv.listen(1)
 
     print(f"[VIDEO] Listening on 0.0.0.0:{VIDEO_PORT}")
@@ -176,8 +178,8 @@ def video_server_main():
     print(f"[VIDEO] Client connected from {addr}")
 
     #conduct handshake, like a true gentleman
-    hello = conn.recv(5) #5 bytes, expects 'YOINK'
-    if hello != b"YOINK":
+    hello = conn.recv(6) #5 bytes, expects 'YOINK'
+    if hello != b"YOINK\n":
         print(f"[VIDEO] Bad handshake: got {hello!r}, expected b'YOINK'")
         conn.close()
         srv.close()
@@ -220,8 +222,8 @@ def video_server_main():
                 conn.sendall(struct.pack(">I", len(nal)))
                 conn.sendall(nal)
             except OSError as e:
-                print(f"[VIDEO] client connection closed: {e}"
-                      break)
+                print(f"[VIDEO] client connection closed: {e}")
+                break
                 
     finally:
         #Cleanup
@@ -259,19 +261,24 @@ def main():
         with conn:
             print(f"[CONTROL] Client connected from {addr}")
 
-            data = conn.recv(1024)
-            print(f"[CONTROL] Handshake recv: {data!r}")
+            #control handshake, as is right and just
+            hello = conn.recv(1024)
+            if hello != b"GREETINGS\n":
+                print(f"[CONTROL] Bad handshake: got {hello!r}, expected b'GREETINGS'")
+                conn.close()
+                return
 
             conn.sendall(b"WHORE\n")
 
             running = True
             last_command_sent = None
 
-            #now start video streaming process
-            stream_proc = mp.Process(target=video_server_main,
-                             daemon=True,
-                             name="VideoProc")
-            stream_proc.start()
+            if STREAM_VIDEO:
+                #now start video streaming process
+                stream_proc = mp.Process(target=video_server_main,
+                                daemon=True,
+                                name="VideoProc")
+                stream_proc.start()
 
             try:
                 while running:
@@ -303,7 +310,7 @@ def main():
 
             finally:
                 try:
-                    ser.close()
+                    shutdown(ser)
                 except Exception:
                     pass
 

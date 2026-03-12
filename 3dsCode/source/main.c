@@ -13,18 +13,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <errno.h>
 
 //networking libraries
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 
 //=========================CONFIGURATION SETTINGS=========================
 
 //server config
-#define SERVER_PORT 5000 //for sending inputs
-#define VIDEO_PORT 6000 //for receiving video feed
+#define SERVER_PORT 5000            //for sending inputs
+#define VIDEO_PORT 6000             //for receiving video feed
+#define MAX_CONNECTION_ATTEMPTS 10  //maximum number of times it can try to reconnect before giving up
 
 //graphics config
 #define TOP_W 400
@@ -58,19 +61,19 @@ static void apt_callback(APT_HookType hook, void* param) {
     switch (hook)
     {
         case APTHOOK_ONSUSPEND:
-            printf("Suspending...\n");
+            printf("[APP] Suspending...\n");
             break;
         case APTHOOK_ONRESTORE:
-            printf("Restored.\n");
+            printf("[APP] Restored.\n");
             break;
         case APTHOOK_ONSLEEP:
-            printf("Sleeping...\n");
+            printf("[APP] Sleeping...\n");
             break;
         case APTHOOK_ONWAKEUP:
-            printf("Woke up.\n");
+            printf("[APP] Woke up.\n");
             break;
         case APTHOOK_ONEXIT:
-            printf("Exiting...\n");
+            printf("[APP] Exiting...\n");
             break;
         default:
             break;
@@ -156,14 +159,23 @@ static bool prompt_ip(char* outIp, size_t outSize) {
 }
 
 //send input bitmask to server
-static void send_inputs(uint16_t mask, int sock) {
+static void send_inputs(uint16_t mask, int* sock) {
     //create 2 byte packet
     uint8_t packet[2];
     packet[0] = (mask >> 8) & 0xFF;
     packet[1] = mask & 0xFF;
 
-    //send packet
-    send(sock, packet, 2, 0);
+    //send packet or print error if failure
+    if (send(*sock, packet, 2, 0) <= 0)
+    {
+        printf(" [CONTROL] Server disconnected");
+        if (*sock >= 0) {
+        shutdown(*sock, SHUT_RDWR);
+        close(*sock);
+        *sock = -1;
+    }
+        *sock = -1;
+    }
 }
 
 //safely close socket and reset variable
@@ -179,6 +191,10 @@ static void close_socket_safe(int* sock) {
 static int connect_tcp(const char* ip, uint16_t port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
+
+    //add flags to allow timeout
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 
     // Prepare address structure
     struct sockaddr_in addr;
@@ -204,7 +220,10 @@ static int connect_tcp(const char* ip, uint16_t port) {
 //handle control server handshake
 static bool do_control_handshake(int sock) {
     const char* prompt = "GREETINGS\n";
-    send(sock, prompt, (int)strlen(prompt), 0);
+    if (send(sock, prompt, (int)strlen(prompt), 0) != (int)strlen(prompt))
+    {
+        return false;
+    }
 
     //wait for response
     char respBuf[8] = {0};
@@ -219,7 +238,10 @@ static bool do_control_handshake(int sock) {
 //handle video streaming server handshake
 static bool do_video_handshake(int sock) {
     const char* prompt = "YOINK\n";
-    send(sock, prompt, (int)strlen(prompt), 0);
+    if (send(sock, prompt, (int)strlen(prompt), 0) != (int)strlen(prompt))
+    {
+        return false;
+    }
 
     char respBuf[8] = {0};
     int r = recv(sock, respBuf, sizeof(respBuf)-1, 0);
@@ -250,28 +272,45 @@ static int recv_all(int sock, void* buf, int len) {
 static void video_thread_main(void* arg) {
     AppState* app = (AppState*)arg;
 
-    //buffer for NAL data
-    static uint8_t nalBuf[MAX_NAL_SIZE];
+    static uint8_t nalBuf[MAX_NAL_SIZE];    //buffer for NAL data
+    static uint8_t connection_attempts = 0; //number of times connection has been attempted
 
-    locked_printf(app, "Video thread starting...\n");
-    locked_printf(app, "Connecting to %s:%d...\n", app->server_ip, VIDEO_PORT);
+    locked_printf(app, "[VIDEO] thread starting...\n");
+    locked_printf(app, "[VIDEO] Connecting to %s:%d...\n", app->server_ip, VIDEO_PORT);
 
-    app->video_sock = connect_tcp(app->server_ip, VIDEO_PORT);
-    if (app->video_sock < 0) {
-        locked_printf(app, "Video socket connect() failed.\n");
-        app->video_connected = false;
-        return;
+    //loop through trying to connect to the video server
+    while(app->running && connection_attempts < MAX_CONNECTION_ATTEMPTS){
+        svcSleepThread(200000000ULL); // 200 ms delay between loop iterations
+        connection_attempts++;
+        app->video_sock = connect_tcp(app->server_ip, VIDEO_PORT);
+        
+        if (app->video_sock < 0) {
+            locked_printf(app, "[VIDEO] Socket connection failed. [Attempt #%d] Retrying...\n", connection_attempts);
+            app->video_connected = false;
+            continue;
+        }
+
+        if (!do_video_handshake(app->video_sock)) {
+            locked_printf(app, "[VIDEO] Handshake failed. [Attempt #%d] Retrying...\n", connection_attempts);
+            close_socket_safe(&app->video_sock);
+            app->video_connected = false;
+            continue;
+        }
+
+        //if it reaches this point, it has succeeded
+        app->video_connected = true;
+        break;
     }
 
-    if (!do_video_handshake(app->video_sock)) {
-        locked_printf(app, "Video handshake failed.\n");
-        close_socket_safe(&app->video_sock);
-        app->video_connected = false;
+    //if it exits the loop without successfully connecting, exits
+    if (app->video_connected == false)
+    {
+        locked_printf(app, "[VIDEO] Maximum connection attempts exceeded. Exiting video thread.\n");
         return;
     }
 
     app->video_connected = true;
-    locked_printf(app, "Video connected. Waiting for NAL units...\n");
+    locked_printf(app, "[VIDEO] Stream connected. Waiting for NAL units...\n");
 
     //main loop for the video stream
     while(app->running) {
@@ -280,38 +319,49 @@ static void video_thread_main(void* arg) {
         uint32_t be_len = 0;
         int r = recv_all(app->video_sock, &be_len, 4);
         if (r <= 0) {
-            locked_printf(app, "Video connection closed while reading length.\n");
-            break;
+            //check error code
+            if (errno == EWOULDBLOCK)
+            {
+                //no data available yet
+                svcSleepThread(20000000ULL); // 20 ms delay before going to next iteration
+                continue;
+            }
+            else
+            {
+                locked_printf(app, "[VIDEO] Connection closed while reading length.\n");
+                break;
+            }
         }
 
         uint32_t nal_len = ntohl(be_len);
 
         //a zero length packet denotes the end of the stream
         if (nal_len == 0) {
-            locked_printf(app, "Video server sent end-of-stream marker.\n");
+            locked_printf(app, "[VIDEO] Server sent end-of-stream marker.\n");
             break;
         }
 
         //verify packet size is within limits
         if (nal_len > MAX_NAL_SIZE) {
-            locked_printf(app, "Video NAL too large: %lu bytes\n", (unsigned long)nal_len);
+            locked_printf(app, "[VIDEO] NAL too large: %lu bytes\n", (unsigned long)nal_len);
             break;
         }
 
         //receive packet
         r = recv_all(app->video_sock, nalBuf, (int)nal_len);
         if (r <= 0) {
-            locked_printf(app, "Video connection closed while reading payload.\n");
+            locked_printf(app, "[VIDEO] Connection closed while reading payload.\n");
             break;
         }
 
         //TODO: implement decoding and rendering
+
     }
 
     //exit thread upon exiting loop
     app->video_connected = false;
     close_socket_safe(&app->video_sock);
-    locked_printf(app, "Video thread exiting...\n");
+    locked_printf(app, "[VIDEO] Exiting video thread...\n");
 }
 
 
@@ -336,8 +386,8 @@ int main(int argc, char* argv[])
     // aligned to 4096 bytes (0x1000).
     socBuffer = (u32*)memalign(0x1000, 0x100000); // 1 MB
     if (!socBuffer) {
-        printf("Failed to alloc SOC buffer.\n");
-        printf("Press START.\n");
+        printf("[APP] Failed to alloc SOC buffer.\n");
+        printf("[APP] Press START.\n");
         while (aptMainLoop()) {
             hidScanInput();
             if (hidKeysDown() & KEY_START) break;
@@ -349,8 +399,8 @@ int main(int argc, char* argv[])
 
     // Initialize SOC service
     if (socInit(socBuffer, 0x100000) != 0) {
-        printf("socInit failed.\n");
-        printf("Press START.\n");
+        printf("[APP] socInit failed.\n");
+        printf("[APP] Press START.\n");
         while (aptMainLoop()) {
             hidScanInput();
             if (hidKeysDown() & KEY_START) break;
@@ -403,35 +453,38 @@ int main(int argc, char* argv[])
         if ((kDown & KEY_A) && sock < 0) {
             if (!prompt_ip(ip, sizeof(ip))) {
                 //if the user cancels or backs out, just keep the loop going
-                printf("IP entry cancelled.\n");
+                printf("[CONTROL] IP entry cancelled.\n");
                 continue;
             }
 
             //if the IP is accepted, continue on
-            printf("IP: %s\n", ip);
-            printf("Connecting to %s:%d...\n", ip, SERVER_PORT);
+            printf("[CONTROL] IP: %s\n", ip);
+            printf("[CONTROL] Connecting to %s:%d...\n", ip, SERVER_PORT);
 
             sock = connect_tcp(ip, SERVER_PORT);
             if (sock < 0) {
-                printf("socket() failed.\n");
+                printf("[CONTROL] socket() failed.\n");
                 sock = -1;
                 continue;
             }
 
             //attempt handshake
             if (!do_control_handshake(sock)) {
-                printf("Handshake failed.\n");
+                printf("[CONTROL] Handshake failed.\n");
                 close(sock);
                 sock = -1;
                 continue;
             }
             
-            printf("Connected. Ready to send inputs!\n");
+            printf("[CONTROL] Connected.\n");
             appState.control_connected = true;
 
             //copy ip address into appState so the video thread can also connect
             strncpy(appState.server_ip, ip, sizeof(appState.server_ip) - 1);
             appState.server_ip[sizeof(appState.server_ip) - 1] = '\0';
+
+            //small delay to allow time for python to open video server
+            svcSleepThread(200000000ULL);
 
             //start video thread
             videoThread = threadCreate(
@@ -444,11 +497,13 @@ int main(int argc, char* argv[])
             );
 
             if (!videoThread) {
-                printf("Failed to create video thread.\n");
+                printf("[APP] Failed to create video thread.\n");
                 appState.running = false;
                 status = 0;
                 break;
             }
+
+            printf("[CONTROL] Ready to receive inputs!\n");
         }
 
         //once connected, continuously read inputs and send them
@@ -458,7 +513,7 @@ int main(int argc, char* argv[])
 
             if (mask != last_mask)
             {
-                send_inputs(mask, sock);
+                send_inputs(mask, &sock);
                 last_mask = mask;
             }
         }
@@ -470,7 +525,7 @@ int main(int argc, char* argv[])
     }
 
     // Cleanup
-    printf("Initiating Cleanup...\n");
+    printf("[APP] Initiating Cleanup...\n");
 
     //tell video thread to stop before shutting down sockets/servers
     appState.running = false;

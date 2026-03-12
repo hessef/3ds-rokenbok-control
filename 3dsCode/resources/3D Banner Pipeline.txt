@@ -1,0 +1,13 @@
+Create model in blender (make sure material is image texture)
+|
+Export object as .obj with .mtl file
+|
+Import .obj into Wings3D, increase size, and export again as .obj with .mtl
+|
+Open EveryFileExplorer and select File>New from File>Nintendo 3DS Plugin>CTR Graphics (CGFX)
+|
+Save as banner.bcres
+|
+Open banner.bcres in Ohana3DS Rebirth to verify size and rendering
+|
+change file extension from .bcres to .cgfx and add to resources folder

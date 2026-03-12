@@ -10,6 +10,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <malloc.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdarg.h>
 
 //networking libraries
 #include <arpa/inet.h>
@@ -20,16 +23,35 @@
 //=========================CONFIGURATION SETTINGS=========================
 
 //server config
-#define SERVER_PORT 5000
+#define SERVER_PORT 5000 //for sending inputs
+#define VIDEO_PORT 6000 //for receiving video feed
 
 //graphics config
 #define TOP_W 400
 #define TOP_H 240
+
+//video config
+#define MAX_NAL_SIZE (1024 * 1024)
+#define VIDEO_THREAD_STACK_SIZE (64 * 1024) //64 KB for now
 //==================================================
 
 
 //=========================APPLICATION STATE HANDLING=========================
 static aptHookCookie hookCookie;
+
+//stores the state shared between the main/control thread and the video thread
+typedef struct {
+    volatile bool running;
+    volatile bool video_connected;
+    volatile bool control_connected;
+
+    int video_sock;
+
+    char server_ip[64];
+
+    //lock around printf so the two threads don't interfere with eachother
+    LightLock printLock;
+} AppState;
 
 //prints out information when changing app states
 static void apt_callback(APT_HookType hook, void* param) {
@@ -55,6 +77,16 @@ static void apt_callback(APT_HookType hook, void* param) {
     }
 }
 
+//helper for thread-safe printf calls
+static void locked_printf(AppState* app, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    LightLock_Lock(&app->printLock);
+    vprintf(fmt, args);
+    LightLock_Unlock(&app->printLock);
+    va_end(args);
+}
+
 //=========================CONTROL HANDLING=========================
 
 //create bitmask of pressed keys are in a bitmask.
@@ -67,9 +99,9 @@ uint16_t create_key_mask(u32 k) {
 
     //dpad mapping
     if (k & KEY_DUP)    mask |= (1 << 6);   //move forward
-    if (k & KEY_DDOWN)  mask |= (1 << 7);   //move backward (7)
-    if (k & KEY_DLEFT)  mask |= (1 << 9);   //move left (9)
-    if (k & KEY_DRIGHT) mask |= (1 << 8);   //move right (8)
+    if (k & KEY_DDOWN)  mask |= (1 << 7);   //move backward
+    if (k & KEY_DLEFT)  mask |= (1 << 9);   //move left
+    if (k & KEY_DRIGHT) mask |= (1 << 8);   //move right
 
     //ABXY mapping
     if (k & KEY_A)      mask |= (1 << 10);   //up on forklift, down on loader
@@ -121,7 +153,6 @@ static bool prompt_ip(char* outIp, size_t outSize) {
     outIp[outSize - 1] = '\0';
 
     return true;
-
 }
 
 //send input bitmask to server
@@ -134,7 +165,158 @@ static void send_inputs(uint16_t mask, int sock) {
     //send packet
     send(sock, packet, 2, 0);
 }
+
+//safely close socket and reset variable
+static void close_socket_safe(int* sock) {
+    if (*sock >= 0) {
+        shutdown(*sock, SHUT_RDWR);
+        close(*sock);
+        *sock = -1;
+    }
+}
+
+//connect to given ip and port
+static int connect_tcp(const char* ip, uint16_t port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+
+    // Prepare address structure
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+
+    // Convert IP string to binary format
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        close(sock);
+        return -1;
+    }
+
+    // Attempt connection
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        close(sock);
+        return -1;
+    }
+
+    return sock;
+}
+
+//handle control server handshake
+static bool do_control_handshake(int sock) {
+    const char* prompt = "GREETINGS\n";
+    send(sock, prompt, (int)strlen(prompt), 0);
+
+    //wait for response
+    char respBuf[8] = {0};
+    int r = recv(sock, respBuf, sizeof(respBuf)-1, 0);
+    if (r <= 0 || strstr(respBuf, "WHORE") == NULL) {
+        return false;
+    }
+
+    return true;
+}
+
+//handle video streaming server handshake
+static bool do_video_handshake(int sock) {
+    const char* prompt = "YOINK\n";
+    send(sock, prompt, (int)strlen(prompt), 0);
+
+    char respBuf[8] = {0};
+    int r = recv(sock, respBuf, sizeof(respBuf)-1, 0);
+    if (r <= 0 || strstr(respBuf, "YEET") == NULL) {
+        return false;
+    }
+
+    return true;
+}
+
+//make sure full buffer is received
+static int recv_all(int sock, void* buf, int len) {
+    int total = 0;
+
+    while (total < len) {
+        int r = recv(sock, (char*)buf + total, len - total, 0);
+        if (r <= 0) return r;
+        total += r;
+    }
+
+    return total;
+}
 //===================================================
+
+
+//=========================VIDEO THREAD=========================
+
+static void video_thread_main(void* arg) {
+    AppState* app = (AppState*)arg;
+
+    //buffer for NAL data
+    static uint8_t nalBuf[MAX_NAL_SIZE];
+
+    locked_printf(app, "Video thread starting...\n");
+    locked_printf(app, "Connecting to %s:%d...\n", app->server_ip, VIDEO_PORT);
+
+    app->video_sock = connect_tcp(app->server_ip, VIDEO_PORT);
+    if (app->video_sock < 0) {
+        locked_printf(app, "Video socket connect() failed.\n");
+        app->video_connected = false;
+        return;
+    }
+
+    if (!do_video_handshake(app->video_sock)) {
+        locked_printf(app, "Video handshake failed.\n");
+        close_socket_safe(&app->video_sock);
+        app->video_connected = false;
+        return;
+    }
+
+    app->video_connected = true;
+    locked_printf(app, "Video connected. Waiting for NAL units...\n");
+
+    //main loop for the video stream
+    while(app->running) {
+
+        //receive the length of the incoming packet
+        uint32_t be_len = 0;
+        int r = recv_all(app->video_sock, &be_len, 4);
+        if (r <= 0) {
+            locked_printf(app, "Video connection closed while reading length.\n");
+            break;
+        }
+
+        uint32_t nal_len = ntohl(be_len);
+
+        //a zero length packet denotes the end of the stream
+        if (nal_len == 0) {
+            locked_printf(app, "Video server sent end-of-stream marker.\n");
+            break;
+        }
+
+        //verify packet size is within limits
+        if (nal_len > MAX_NAL_SIZE) {
+            locked_printf(app, "Video NAL too large: %lu bytes\n", (unsigned long)nal_len);
+            break;
+        }
+
+        //receive packet
+        r = recv_all(app->video_sock, nalBuf, (int)nal_len);
+        if (r <= 0) {
+            locked_printf(app, "Video connection closed while reading payload.\n");
+            break;
+        }
+
+        //TODO: implement decoding and rendering
+    }
+
+    //exit thread upon exiting loop
+    app->video_connected = false;
+    close_socket_safe(&app->video_sock);
+    locked_printf(app, "Video thread exiting...\n");
+}
+
+
+//===================================================
+
 
 int main(int argc, char* argv[])
 {
@@ -189,6 +371,18 @@ int main(int argc, char* argv[])
     uint16_t mask = 0;      //user input bitmask
     uint16_t last_mask = 0; //last user input bitmask
 
+    //shared application state for video thread
+    AppState appState;
+    memset(&appState, 0, sizeof(appState));
+    appState.running = true;
+    appState.video_connected = false;
+    appState.control_connected = false;
+    appState.video_sock = -1;
+    LightLock_Init(&appState.printLock);
+
+    //handle video thread, but do not create until we know the ip
+    Thread videoThread = 0;
+
     //main application loop
     while (aptMainLoop() && (status == 1))
     {
@@ -197,10 +391,13 @@ int main(int argc, char* argv[])
         //get all key updates (I'm hoarding them, like a dragon hoards gold)
         u32 kDown = hidKeysDown();
         //u32 kUp   = hidKeysUp();
-        //u32 kHeld = hidKeysHeld();
+        u32 kHeld = hidKeysHeld();
 
         // Exit
-        if (kDown & KEY_START) break;
+        if (kDown & KEY_START) {
+            appState.running = false;
+            break;
+        }
 
         //press A to ask for server IP
         if ((kDown & KEY_A) && sock < 0) {
@@ -214,91 +411,81 @@ int main(int argc, char* argv[])
             printf("IP: %s\n", ip);
             printf("Connecting to %s:%d...\n", ip, SERVER_PORT);
 
-            sock = socket(AF_INET, SOCK_STREAM, 0);
+            sock = connect_tcp(ip, SERVER_PORT);
             if (sock < 0) {
                 printf("socket() failed.\n");
                 sock = -1;
                 continue;
             }
 
-            // Prepare address structure
-            struct sockaddr_in addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(SERVER_PORT);
-
-            // Convert IP string to binary format
-            if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
-                printf("Invalid IP format.\n");
-                close(sock);
-                sock = -1;
-                continue;
-            }
-            
-            // Attempt connection
-            if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-                printf("connect() failed.\n");
-                close(sock);
-                sock = -1;
-                continue;
-            }
-
             //attempt handshake
-            const char* prompt = "GREETINGS\n";
-            send(sock, prompt, (int)strlen(prompt), 0);
-
-            //wait for response
-            char respBuf[8] = {0};
-            int r = recv(sock, respBuf, sizeof(respBuf)-1, 0);
-            if (r <= 0 || strstr(respBuf, "WHORE") == NULL) {
-                        printf("Handshake failed. Got: %s\n", respBuf);
-                        close(sock);
-                        sock = -1;
-                        continue;
-                    }
+            if (!do_control_handshake(sock)) {
+                printf("Handshake failed.\n");
+                close(sock);
+                sock = -1;
+                continue;
+            }
             
             printf("Connected. Ready to send inputs!\n");
+            appState.control_connected = true;
 
-            //control loop
-            while(aptMainLoop())
-            {
-                hidScanInput();
+            //copy ip address into appState so the video thread can also connect
+            strncpy(appState.server_ip, ip, sizeof(appState.server_ip) - 1);
+            appState.server_ip[sizeof(appState.server_ip) - 1] = '\0';
 
-                //get all key updates (I'm hoarding them, like a dragon hoards gold)
-                //u32 kDown = hidKeysDown();
-                //u32 kUp   = hidKeysUp();
-                u32 kHeld = hidKeysHeld();
+            //start video thread
+            videoThread = threadCreate(
+                video_thread_main,          //thread entry point
+                &appState,                  
+                VIDEO_THREAD_STACK_SIZE,
+                0x18,                       //priority
+                -2,                         //default CPU affinity (let system schedule it)
+                true                        //start immediately
+            );
 
-                // Exit
-                if (kHeld & KEY_START) 
-                {
-                    status = 0;
-                    break;
-                }
-                //create bitmask and send
-                mask = create_key_mask(kHeld);
-
-                if (mask != last_mask)
-                {
-                    send_inputs(mask, sock);
-                    last_mask = mask;
-                }
-
-                //limit to roughly one send per frame
-                gfxFlushBuffers();
-                gfxSwapBuffers(); 
-                gspWaitForVBlank();
+            if (!videoThread) {
+                printf("Failed to create video thread.\n");
+                appState.running = false;
+                status = 0;
+                break;
             }
-            
-            //once control loop is exited, exit code
-            printf("Exiting Control Loop...\n");
-            break;
-
         }
 
+        //once connected, continuously read inputs and send them
+        if (sock >= 0) {
+            //create bitmask and send
+            mask = create_key_mask(kHeld);
+
+            if (mask != last_mask)
+            {
+                send_inputs(mask, sock);
+                last_mask = mask;
+            }
+        }
+
+        //limit to roughly one send per frame
+        gfxFlushBuffers();
+        gfxSwapBuffers(); 
+        gspWaitForVBlank(); 
     }
+
     // Cleanup
     printf("Initiating Cleanup...\n");
+
+    //tell video thread to stop before shutting down sockets/servers
+    appState.running = false;
+
+    //close video socket
+    close_socket_safe(&appState.video_sock);
+
+    //wait for video thread to exit before shutting down network services
+    if (videoThread) {
+        threadJoin(videoThread, U64_MAX);
+        threadFree(videoThread);
+        videoThread = 0;
+    }
+
+    //shutdown networking services and exit app
     if (sock >= 0)
     {
         shutdown(sock, SHUT_RDWR);

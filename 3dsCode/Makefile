@@ -53,9 +53,9 @@ APP_AUTHOR			:= Fritz Hesse
 PRODUCT_CODE		:= CTR-P-ROKB
 UNIQUE_ID			:= 0xE9001
 
-#banner and icon files
+#banner and icon files (uncomment the ones you want to use)
 BANNER_AUDIO		:= resources/banner.wav
-BANNER_IMAGE		:= resources/banner.png
+BANNER_IMAGE		:= resources/banner.cgfx
 RSF_PATH			:= resources/app.rsf
 ICON				:= resources/icon.png
 #---------------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import struct
 import subprocess
 from typing import List
 import multiprocessing as mp
+import ctypes
 
 #=========================CONFIGURATION SETTINGS=========================
 
@@ -36,23 +37,182 @@ MAX_ROLLING_BUFFER = 2 * 1024 * 1024  # 2 MiB
 START3 = b"\x00\x00\x01"
 START4 = b"\x00\x00\x00\x01"
 
+#shared video-process state values
+VIDEO_STATE_STOPPED   = 0   #video process is not running
+VIDEO_STATE_STARTING  = 1   #video process has been spawned but is not ready yet
+VIDEO_STATE_WAITING   = 2   #video server socket is listening and waiting for client
+VIDEO_STATE_STREAMING = 3   #video client connected and stream loop active
+VIDEO_STATE_STOPPING  = 4   #video process is shutting down
+VIDEO_STATE_ERROR     = 5   #video process hit an error
+
 #global variables
 global stream_proc
 stream_proc = None
-global stream_proc_active
-stream_proc_active = False
 global ser
 ser = None
+global video_state
+video_state = None
 #==================================================
 
 
 #=========================HELPER FUNCTIONS=========================
+def create_video_shared_state():
+    """
+    Create the shared memory object used to communicate the video process state
+    between the control process and the video process.
+    """
+    return mp.Value(ctypes.c_int, VIDEO_STATE_STOPPED, lock=True)
+
+
+def destroy_video_shared_state():
+    """
+    Release the parent's reference to the shared video state object.
+    mp.Value does not need an explicit free, but clearing the global reference
+    makes the lifetime of the object easier to reason about.
+    """
+    global video_state
+    video_state = None
+
+
+def set_video_state(state_obj, new_state: int):
+    """
+    Safely update the shared video-process state.
+    """
+    if state_obj is None:
+        return
+
+    with state_obj.get_lock():
+        state_obj.value = new_state
+
+
+def get_video_state(state_obj) -> int:
+    """
+    Safely read the shared video-process state.
+    """
+    if state_obj is None:
+        return VIDEO_STATE_STOPPED
+
+    with state_obj.get_lock():
+        return state_obj.value
+
+
+def video_state_name(state: int) -> str:
+    """
+    Convert a numeric video state into a readable debug string.
+    """
+    if state == VIDEO_STATE_STOPPED:
+        return "STOPPED"
+    if state == VIDEO_STATE_STARTING:
+        return "STARTING"
+    if state == VIDEO_STATE_WAITING:
+        return "WAITING"
+    if state == VIDEO_STATE_STREAMING:
+        return "STREAMING"
+    if state == VIDEO_STATE_STOPPING:
+        return "STOPPING"
+    if state == VIDEO_STATE_ERROR:
+        return "ERROR"
+    return f"UNKNOWN({state})"
+
+
+def video_is_active() -> bool:
+    """
+    Returns True if the video process is in some active/running state.
+    """
+    state = get_video_state(video_state)
+    return state in (
+        VIDEO_STATE_STARTING,
+        VIDEO_STATE_WAITING,
+        VIDEO_STATE_STREAMING,
+        VIDEO_STATE_STOPPING,
+    )
+
+
+def refresh_video_process_status() -> int:
+    """
+    Synchronize the shared state with the actual child process object.
+    This lets the control process notice if the video process died unexpectedly.
+    """
+    global stream_proc
+    global video_state
+
+    if stream_proc is None:
+        if video_state is not None:
+            set_video_state(video_state, VIDEO_STATE_STOPPED)
+        return VIDEO_STATE_STOPPED
+
+    #if the process object exists but is no longer alive, update shared state
+    if not stream_proc.is_alive():
+        current = get_video_state(video_state)
+
+        #preserve explicit error state if the child marked one
+        if current != VIDEO_STATE_ERROR:
+            set_video_state(video_state, VIDEO_STATE_STOPPED)
+
+        return get_video_state(video_state)
+
+    return get_video_state(video_state)
+
+
+def cleanup_video_process():
+    """
+    Stop the video process if it exists and reset the shared state.
+    Safe to call multiple times.
+    """
+    global stream_proc
+    global video_state
+
+    if video_state is not None:
+        current = get_video_state(video_state)
+        if current not in (VIDEO_STATE_STOPPED, VIDEO_STATE_ERROR):
+            set_video_state(video_state, VIDEO_STATE_STOPPING)
+
+    if stream_proc is not None:
+        try:
+            if stream_proc.is_alive():
+                stream_proc.terminate()
+                stream_proc.join(timeout=1.0)
+        except Exception:
+            pass
+
+        try:
+            stream_proc.close()
+        except Exception:
+            pass
+
+        stream_proc = None
+
+    if video_state is not None:
+        set_video_state(video_state, VIDEO_STATE_STOPPED)
+
+    destroy_video_shared_state()
+
+
+def start_video_process():
+    """
+    Create shared state, launch the video process, and mark it as starting.
+    """
+    global stream_proc
+    global video_state
+
+    #clean up any stale state from a previous run
+    cleanup_video_process()
+
+    video_state = create_video_shared_state()
+    set_video_state(video_state, VIDEO_STATE_STARTING)
+
+    stream_proc = mp.Process(
+        target=video_server_main,
+        args=(video_state,),
+        daemon=True,
+        name="VideoProc"
+    )
+    stream_proc.start()
+
 def shutdown():
     """
     Handles graceful shutdown of daemon process and servers
     """
-    global stream_proc
-    global stream_proc_active
     global ser
 
     print("[CONTROL] Shutting down...")
@@ -65,16 +225,8 @@ def shutdown():
         pass
 
     if STREAM_VIDEO and stream_proc_active and stream_proc is not None:
-        try:
-            #shutdown daemon process
-            stream_proc.terminate()
-            time.sleep(0.25)
-            stream_proc.close()
-        except Exception:
-            pass
+        cleanup_video_process()
     
-    stream_proc_active = False
-
     print("[CONTROL] Done!")
 
 
@@ -140,10 +292,13 @@ def queue_complete_nal_units(rolling: bytes, nal_queue: List[bytes]) -> bytes:
 
 #=========================FFMPEG PIPELINE=========================
 def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
+    """
+    Launch ffmpeg and stream H.264 Annex-B bytes to stdout.
+    """
+
     vf = (
         "scale=400:240:force_original_aspect_ratio=decrease,"
-        "pad=400:240:(400-iw)/2:(240-ih)/2,"
-        "transpose=1"
+        "pad=400:240:(400-iw)/2:(240-ih)/2"
     )
 
     cmd = [
@@ -153,8 +308,6 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
         # Webcam input on Windows
         "-f", "dshow",
         "-i", f"video={device_name}",
-
-        # Optional: force capture size/fps from the webcam before filtering
         "-video_size", "640x480",
         "-framerate", "30",
 
@@ -180,58 +333,70 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
 
 
 #=========================VIDEO SERVER PROCESS=========================
-def video_server_main():
-    global stream_proc_active
+def video_server_main(shared_video_state):
+    """
+    Separate process for serving the H.264 video stream to the 3DS.
+    Uses shared memory so the parent process can track its state.
+    """
 
-    #create TCP server socket
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", VIDEO_PORT))
-    srv.settimeout(0.5)
-    srv.listen(1)
+    conn = None
+    srv = None
+    proc = None
 
-    print(f"[VIDEO] Listening on 0.0.0.0:{VIDEO_PORT}")
-    print(f"[VIDEO] Waiting for client...")
-
-    #loop to keep from blocking
-    while True:
-        try:
-            conn, addr = srv.accept()
-            break
-        except socket.timeout:
-            continue
-        
-    print(f"[VIDEO] Client connected from {addr}")
-
-    #conduct handshake, like a true gentleman
-    hello = conn.recv(6) #6 bytes, expects 'YOINK'
-    if hello != b"YOINK\n":
-        print(f"[VIDEO] Bad handshake: got {hello!r}, expected b'YOINK'")
-        conn.close()
-        srv.close()
-        return
-    
-    conn.sendall(b"YEET\n")
-    print("[VIDEO] Handshake OK (YOINK <-> YEET)")
-
-    #start ffmpeg
-    proc = ffmpeg_h264_stream_webcam(WEBCAM)
-
-    assert proc.stdout is not None
- 
-    rolling = b""                   #rolling buffer for ffmpeg bytes before they are split into NAL units
-    nal_queue: List[bytes] = []     #queue of complete NAL units ready to send
-
-    #stream loop
     try:
+        #create TCP server socket
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", VIDEO_PORT))
+        srv.settimeout(0.5)
+        srv.listen(1)
+
+        set_video_state(shared_video_state, VIDEO_STATE_WAITING)
+        print(f"[VIDEO] Listening on 0.0.0.0:{VIDEO_PORT}")
+        print(f"[VIDEO] Waiting for client...")
+
+        #loop to keep from blocking
+        while True:
+            try:
+                conn, addr = srv.accept()
+                break
+            except socket.timeout:
+                continue
+            
+        print(f"[VIDEO] Client connected from {addr}")
+
+        #conduct handshake, like a true gentleman
+        hello = conn.recv(6) #6 bytes, expects 'YOINK'
+        if hello != b"YOINK\n":
+            print(f"[VIDEO] Bad handshake: got {hello!r}, expected b'YOINK'")
+            set_video_state(shared_video_state, VIDEO_STATE_ERROR)
+            return
+        
+        conn.sendall(b"YEET\n")
+        print("[VIDEO] Handshake OK (YOINK <-> YEET)")
+
+        #start ffmpeg
+        proc = ffmpeg_h264_stream_webcam(WEBCAM)
+        assert proc.stdout is not None
+
+        set_video_state(shared_video_state, VIDEO_STATE_STREAMING)
+    
+        rolling = b""                   #rolling buffer for ffmpeg bytes before they are split into NAL units
+        nal_queue: List[bytes] = []     #queue of complete NAL units ready to send
+
+        #stream loop
         while True:
             #ensure at least one complete NAL is available
             while not nal_queue:
                 chunk = proc.stdout.read(8192)
                 if not chunk:
                     #ffmpeg ended; send end-of-stream marker
-                    conn.sendall(struct.pack(">I", 0))
+                    try:
+                        conn.sendall(struct.pack(">I", 0))
+                    except Exception:
+                        pass
                     print("[VIDEO] End-of-stream sent (length=0).")
+                    set_video_state(shared_video_state, VIDEO_STATE_STOPPING)
                     return
                 
                 rolling += chunk
@@ -250,21 +415,49 @@ def video_server_main():
             except OSError as e:
                 print(f"[VIDEO] client connection closed: {e}")
                 break
+
     except KeyboardInterrupt:
-        print("Keyboard interrupt!")            
+        print("[VIDEO] Keyboard interrupt!")    
+        set_video_state(shared_video_state, VIDEO_STATE_STOPPING)
+
+    except Exception as e:
+        print(f"[VIDEO] Unhandled exception: {e}")
+        set_video_state(shared_video_state, VIDEO_STATE_ERROR)
+
     finally:
         #Cleanup
         print("[VIDEO] Initiating cleanup...")
-        conn.close()
-        srv.close()
-        proc.kill()
-        stream_proc_active = False
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if srv is not None:
+            try:
+                srv.close()
+            except Exception:
+                pass
+
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                pass
+        
+        #if the daemon did not explicitly report an error, mark it stopped
+        if get_video_state(shared_video_state) != VIDEO_STATE_ERROR:
+            set_video_state(shared_video_state, VIDEO_STATE_STOPPED)
         print("[VIDEO] Clean shutdown.")
 #==================================================
 
 def main():
     global stream_proc
-    global stream_proc_active
     global ser
 
     # Open serial connection to Arduino
@@ -295,6 +488,7 @@ def main():
                 break
             except socket.timeout:
                 continue
+
         with conn:
             print(f"[CONTROL] Client connected from {addr}")
 
@@ -305,6 +499,7 @@ def main():
                     break
                 except socket.timeout:
                     continue
+
             if hello != b"GREETINGS\n":
                 print(f"[CONTROL] Bad handshake: got {hello!r}, expected b'GREETINGS'")
                 conn.close()
@@ -314,17 +509,23 @@ def main():
 
             running = True
             last_command_sent = None
+            last_video_state = VIDEO_STATE_STOPPED
 
             if STREAM_VIDEO:
                 #now start video streaming process
-                stream_proc = mp.Process(target=video_server_main,
-                                daemon=True,
-                                name="VideoProc")
-                stream_proc.start()
-                stream_proc_active = True
+                start_video_process()
+                last_video_state = get_video_state(video_state)
+                print(f"[CONTROL] Video process state: {video_state_name(last_video_state)}")
 
             try:
                 while running:
+                    #keep parent-side knowledge of the video process up to date
+                    if STREAM_VIDEO:
+                        state_now = refresh_video_process_status()
+                        if state_now != last_video_state:
+                            print(f"[CONTROL] Video state changed: {video_state_name(last_video_state)} -> {video_state_name(state_now)}")
+                            last_video_state = state_now
+
                     #receive command
                     command = conn.recv(2)
 
@@ -336,7 +537,7 @@ def main():
                     if command != last_command_sent:
                         ser.write(command)
                         last_command_sent = command
-                        print(f"[CONTROL] Sent command: {command}")
+                        #print(f"[CONTROL] Sent command: {command}")
                     else:
                         ser.write(command)
 
@@ -351,6 +552,11 @@ def main():
                         # Ignore serial decode/read hiccups
                         pass
 
+                    #limit how fast commands are sent
+                    time.sleep(1.0 / SEND_RATE_HZ)
+            except KeyboardInterrupt:
+                print("[CONTROL] Keyboard interrupt.\n")
+                
             finally:
                 try:
                     shutdown()

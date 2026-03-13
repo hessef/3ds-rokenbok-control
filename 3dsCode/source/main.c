@@ -2,7 +2,7 @@
 //It also handles receiving the video stream and displaying it
 
 #include <3ds.h>
-
+#include <3ds/services/mvd.h>
 
 //standard C libraries
 #include <stdio.h>
@@ -36,6 +36,30 @@
 //video config
 #define MAX_NAL_SIZE (1024 * 1024)
 #define VIDEO_THREAD_STACK_SIZE (64 * 1024) //64 KB for now
+#define MAX_AU_SIZE (1024 * 1024)
+#define VIDEO_RGB565_FRAME_BYTES (TOP_W * TOP_H * 2) //number of bytes in one RGB565 top-screen frame
+//==================================================
+
+
+//=========================GLOBAL VARIABLES=========================
+static uint8_t sps_buf[256];
+static uint8_t pps_buf[256];
+static size_t sps_len = 0;
+static size_t pps_len = 0;
+
+static uint8_t au_buf[MAX_AU_SIZE];
+static size_t au_len = 0;
+static bool have_started_frame = false;
+
+static LightLock videoFrameLock;            //shared lock for decoded frame exchange between video and main threads
+static uint8_t* mvd_input_buf = NULL;       //linearm buffer containing one complete access unit fed into the decoder
+static uint16_t* videoFrameFront = NULL;    //main thread displays this frame
+static uint16_t* videoFrameBack  = NULL;    //video thread renders into this frame
+static MVDSTD_Config mvd_config;            //MVD config object reused for each render
+
+//MVD decoder state
+static bool mvd_initialized = false;
+static bool video_frame_ready = false;
 //==================================================
 
 
@@ -279,6 +303,262 @@ static int recv_all(int sock, void* buf, int len) {
 //===================================================
 
 
+//=========================VIDEO DECODE=========================
+
+//analyzes NAL packet and returns type
+static int nal_type(const uint8_t* nal, size_t len) {
+    size_t i = 0;
+
+    // skip Annex-B start code
+    if (len >= 4 && nal[0] == 0 && nal[1] == 0 && nal[2] == 0 && nal[3] == 1) i = 4;
+    else if (len >= 3 && nal[0] == 0 && nal[1] == 0 && nal[2] == 1) i = 3;
+    else return -1;
+
+    if (i >= len) return -1;
+    return nal[i] & 0x1F;
+}
+
+//append data into a byte buffer if there is room
+static bool append_bytes(uint8_t* dst, size_t* dst_len, size_t dst_cap, const uint8_t* src, size_t src_len) {
+    if (!dst || !dst_len || !src) return false;
+    if ((*dst_len + src_len) > dst_cap) return false;
+
+    memcpy(dst + *dst_len, src, src_len);
+    *dst_len += src_len;
+    return true;
+}
+
+//clear current access unit assembly buffer
+static void reset_au_builder(void) {
+    au_len = 0;
+    have_started_frame = false;
+}
+
+//initialize MVD and allocate all decode/display buffers
+static bool init_video_decoder(AppState* app) {
+    Result res = 0;
+
+    //use RGB565 on the top screen so the MVD output format matches the screen format directly
+    gfxSetScreenFormat(GFX_TOP, GSP_RGB565_OES);
+
+    //allocate linearmem buffers
+    mvd_input_buf = (uint8_t*)linearAlloc(MAX_AU_SIZE);
+    videoFrameFront = (uint16_t*)linearAlloc(VIDEO_RGB565_FRAME_BYTES);
+    videoFrameBack  = (uint16_t*)linearAlloc(VIDEO_RGB565_FRAME_BYTES);
+
+    if (!mvd_input_buf || !videoFrameFront || !videoFrameBack) {
+        locked_printf(app, "[VIDEO] Failed to allocate decoder buffers.\n");
+        return false;
+    }
+
+    memset(mvd_input_buf, 0, MAX_AU_SIZE);
+    memset(videoFrameFront, 0, VIDEO_RGB565_FRAME_BYTES);
+    memset(videoFrameBack,  0, VIDEO_RGB565_FRAME_BYTES);
+
+    //initialize MVD for H.264 input and RGB565 output
+    //MVD_DEFAULT_WORKBUF_SIZE is the libctru default working buffer for video mode
+    res = mvdstdInit(
+        MVDMODE_VIDEOPROCESSING,
+        MVD_INPUT_H264,
+        MVD_OUTPUT_RGB565,
+        MVD_DEFAULT_WORKBUF_SIZE,
+        NULL
+    );
+
+    if (R_FAILED(res)) {
+        locked_printf(app, "[VIDEO] mvdstdInit failed: 0x%08lX\n", (unsigned long)res);
+        return false;
+    }
+
+    LightLock_Init(&videoFrameLock);
+    mvd_initialized = true;
+    video_frame_ready = false;
+
+    locked_printf(app, "[VIDEO] MVD initialized.\n");
+    return true;
+}
+
+//shut down MVD and free all decode/display buffers
+static void shutdown_video_decoder(void) {
+    if (mvd_initialized) {
+        mvdstdExit();
+        mvd_initialized = false;
+    }
+
+    if (mvd_input_buf) {
+        linearFree(mvd_input_buf);
+        mvd_input_buf = NULL;
+    }
+
+    if (videoFrameFront) {
+        linearFree(videoFrameFront);
+        videoFrameFront = NULL;
+    }
+
+    if (videoFrameBack) {
+        linearFree(videoFrameBack);
+        videoFrameBack = NULL;
+    }
+
+    video_frame_ready = false;
+    reset_au_builder();
+    sps_len = 0;
+    pps_len = 0;
+}
+
+//swap decoded front/back buffers after a fresh frame has been rendered
+static void swap_video_buffers(void) {
+    uint16_t* temp = videoFrameFront;
+    videoFrameFront = videoFrameBack;
+    videoFrameBack = temp;
+}
+
+//feed one complete access unit to MVD, render it into videoFrameBack, then swap buffers
+static bool decode_access_unit(AppState* app, const uint8_t* data, size_t len) {
+    if (!mvd_initialized || !data || len == 0) return false;
+    if (len > MAX_AU_SIZE) return false;
+
+    Result res = 0;
+    MVDSTD_ProcessNALUnitOut nal_out;
+
+    //MVD input must be in linearmem
+    memcpy(mvd_input_buf, data, len);
+
+    //create a fresh config every frame so the output target always points at the current back buffer
+    memset(&mvd_config, 0, sizeof(mvd_config));
+    mvdstdGenerateDefaultConfig(
+        &mvd_config,
+        TOP_W,                       //input width
+        TOP_H,                       //input height
+        TOP_W,                       //output width
+        TOP_H,                       //output height
+        NULL,                        //not used for H.264 input
+        (u32*)videoFrameBack,        //output buffer 0
+        NULL                         //not used for RGB565 output
+    );
+
+    //submit the H.264 access unit to MVD
+    //flag=0 is the normal path
+    memset(&nal_out, 0, sizeof(nal_out));
+    res = mvdstdProcessVideoFrame(mvd_input_buf, len, 0, &nal_out);
+
+    if (!MVD_CHECKNALUPROC_SUCCESS(res)) {
+        locked_printf(app, "[VIDEO] mvdstdProcessVideoFrame failed: 0x%08lX\n", (unsigned long)res);
+        return false;
+    }
+
+    //parameter-set-only buffers do not produce a visible frame yet
+    if (res == MVD_STATUS_PARAMSET) {
+        return true;
+    }
+
+    //only render when a frame is actually ready
+    if (res == MVD_STATUS_FRAMEREADY) {
+        res = mvdstdRenderVideoFrame(&mvd_config, true);
+        if (R_FAILED(res)) {
+            locked_printf(app, "[VIDEO] mvdstdRenderVideoFrame failed: 0x%08lX\n", (unsigned long)res);
+            return false;
+        }
+
+        //publish freshly decoded frame for the main thread
+        LightLock_Lock(&videoFrameLock);
+        swap_video_buffers();
+        video_frame_ready = true;
+        LightLock_Unlock(&videoFrameLock);
+    }
+
+    return true;
+}
+
+//copy one frame into the top screen buffer and apply the appropriate rotation
+static void blit_rgb565_to_top_screen(const uint16_t* src) {
+    if (!src) return;
+
+    u16 stride = 0;
+    uint16_t* fb = (uint16_t*)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, &stride, NULL);
+    if (!fb) return;
+
+    //src is stored as normal landscape rows: [y * TOP_W + x]
+    //3DS top-screen framebuffer is stored rotated: [x * TOP_H + (TOP_H - 1 - y)]
+    for (int y = 0; y < TOP_H; y++) {
+        for (int x = 0; x < TOP_W; x++) {
+            fb[x * TOP_H + (TOP_H - 1 - y)] = src[y * TOP_W + x];
+        }
+    }
+}
+
+//called by the main thread once per frame to draw the newest decoded image
+static void render_latest_video_frame(void) {
+    if (!video_frame_ready || !videoFrameFront) return;
+
+    LightLock_Lock(&videoFrameLock);
+    blit_rgb565_to_top_screen(videoFrameFront);
+    LightLock_Unlock(&videoFrameLock);
+}
+
+//take an incoming NAL and either cache it, append it to the current AU,
+//or flush/decode the previous AU when we have enough data for a frame
+static bool process_received_nal(AppState* app, const uint8_t* nal, size_t nal_len) {
+    int type = nal_type(nal, nal_len);
+    if (type < 0) return true;
+
+    //cache SPS
+    if (type == 7) {
+        if (nal_len <= sizeof(sps_buf)) {
+            memcpy(sps_buf, nal, nal_len);
+            sps_len = nal_len;
+        }
+        return true;
+    }
+
+    //cache PPS
+    if (type == 8) {
+        if (nal_len <= sizeof(pps_buf)) {
+            memcpy(pps_buf, nal, nal_len);
+            pps_len = nal_len;
+        }
+        return true;
+    }
+
+    //for an IDR, flush any prior AU, then prepend SPS/PPS for decoder robustness
+    if (type == 5) {
+        if (au_len > 0) {
+            if (!decode_access_unit(app, au_buf, au_len)) return false;
+            reset_au_builder();
+        }
+
+        if (sps_len > 0 && !append_bytes(au_buf, &au_len, sizeof(au_buf), sps_buf, sps_len)) return false;
+        if (pps_len > 0 && !append_bytes(au_buf, &au_len, sizeof(au_buf), pps_buf, pps_len)) return false;
+        if (!append_bytes(au_buf, &au_len, sizeof(au_buf), nal, nal_len)) return false;
+
+        have_started_frame = true;
+        return true;
+    }
+
+    //for non-IDR slices, use a simple "one slice starts a new frame" rule
+    //this matches many low-latency x264 streams well enough for a first implementation
+    if (type == 1) {
+        if (have_started_frame && au_len > 0) {
+            if (!decode_access_unit(app, au_buf, au_len)) return false;
+            reset_au_builder();
+        }
+
+        if (!append_bytes(au_buf, &au_len, sizeof(au_buf), nal, nal_len)) return false;
+        have_started_frame = true;
+        return true;
+    }
+
+    //SEI / AUD can be kept with the current frame if one is in progress
+    if ((type == 6 || type == 9) && have_started_frame) {
+        if (!append_bytes(au_buf, &au_len, sizeof(au_buf), nal, nal_len)) return false;
+        return true;
+    }
+
+    return true;
+}
+//===================================================
+
+
 //=========================VIDEO THREAD=========================
 
 static void video_thread_main(void* arg) {
@@ -289,6 +569,13 @@ static void video_thread_main(void* arg) {
 
     locked_printf(app, "[VIDEO] thread starting...\n");
     locked_printf(app, "[VIDEO] Connecting to %s:%d...\n", app->server_ip, VIDEO_PORT);
+
+    //initialize decoder so it's ready when the connection is established
+    if (!init_video_decoder(app))
+    {
+        locked_printf(app, "[VIDEO] Decoder init failed.\n");
+        return;
+    }
 
     //loop through trying to connect to the video server
     while(app->running && connection_attempts < MAX_CONNECTION_ATTEMPTS){
@@ -318,6 +605,7 @@ static void video_thread_main(void* arg) {
     if (app->video_connected == false)
     {
         locked_printf(app, "[VIDEO] Maximum connection attempts exceeded. Exiting video thread.\n");
+        shutdown_video_decoder();
         return;
     }
 
@@ -356,13 +644,23 @@ static void video_thread_main(void* arg) {
             break;
         }
 
-        //TODO: implement decoding and rendering
+        //assemble NAL units into AU (Access Units, not Alternate Universe) and decode completed frames
+        if (!process_received_nal(app, nalBuf, nal_len)) {
+            locked_printf(app, "[VIDEO] Failed while processing NAL.\n");
+            break;
+        }
+    }
 
+    //flush any partially assembled frames on exit
+    if (au_len > 0) {
+        decode_access_unit(app, au_buf, au_len);
+        reset_au_builder();
     }
 
     //exit thread upon exiting loop
     app->video_connected = false;
     close_socket_safe(&app->video_sock);
+    shutdown_video_decoder();
     return;
 }
 
@@ -376,7 +674,8 @@ int main(int argc, char* argv[])
     static int status = 1;
 
     gfxInitDefault();
-    consoleInit(GFX_BOTTOM, NULL); //print to bottom screen
+    gfxSetScreenFormat(GFX_TOP, GSP_RGB565_OES);    //top screen must match MVD RGB565 output
+    consoleInit(GFX_BOTTOM, NULL);                  //print to bottom screen
 
     //make sure HOME is allowed
     aptSetHomeAllowed(true);
@@ -424,8 +723,8 @@ int main(int argc, char* argv[])
 
     //shared application state for video thread
     AppState appState;
-    aptHook(&hookCookie, apt_callback, &appState);      //allow recording data about state changes
     memset(&appState, 0, sizeof(appState));
+    aptHook(&hookCookie, apt_callback, &appState);      //allow recording data about state changes
     appState.running = true;
     appState.video_connected = false;
     appState.control_connected = false;
@@ -520,9 +819,12 @@ int main(int argc, char* argv[])
             {
                 send_inputs(mask, &sock);
                 last_mask = mask;
-                printf("[CONTROL] Sending inputs!\n");
+                //printf("[CONTROL] Sending inputs!\n");
             }
         }
+
+        //draw most recently decoded frame to top screen
+        render_latest_video_frame();
 
         //limit to roughly one send per frame
         gfxFlushBuffers();

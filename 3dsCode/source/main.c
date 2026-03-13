@@ -47,6 +47,9 @@ typedef struct {
     volatile bool running;
     volatile bool video_connected;
     volatile bool control_connected;
+    volatile bool suspend_requested;
+    volatile bool exit_requested;
+    volatile bool console_alive;
 
     int video_sock;
 
@@ -56,24 +59,32 @@ typedef struct {
     LightLock printLock;
 } AppState;
 
-//prints out information when changing app states
+//records information about app status in the appState
 static void apt_callback(APT_HookType hook, void* param) {
+    AppState* app = (AppState*)param;
+    if (!app)   return;
+
     switch (hook)
     {
         case APTHOOK_ONSUSPEND:
-            printf("[APP] Suspending...\n");
+            app->suspend_requested = true;
+            app->running = false;
             break;
         case APTHOOK_ONRESTORE:
-            printf("[APP] Restored.\n");
+            app->suspend_requested = false;
+            app->running = true;
             break;
         case APTHOOK_ONSLEEP:
-            printf("[APP] Sleeping...\n");
+            app->suspend_requested = true;
+            app->running = false;
             break;
         case APTHOOK_ONWAKEUP:
-            printf("[APP] Woke up.\n");
+            app->suspend_requested = false;
+            app->running = true;
             break;
         case APTHOOK_ONEXIT:
-            printf("[APP] Exiting...\n");
+            app->exit_requested = true;
+            app->running = false;
             break;
         default:
             break;
@@ -82,10 +93,14 @@ static void apt_callback(APT_HookType hook, void* param) {
 
 //helper for thread-safe printf calls
 static void locked_printf(AppState* app, const char* fmt, ...) {
+    if (!app || !app->console_alive)    return;
+
     va_list args;
     va_start(args, fmt);
     LightLock_Lock(&app->printLock);
-    vprintf(fmt, args);
+    if (app->console_alive) {
+        vprintf(fmt, args);
+    }
     LightLock_Unlock(&app->printLock);
     va_end(args);
 }
@@ -170,10 +185,10 @@ static void send_inputs(uint16_t mask, int* sock) {
     {
         printf(" [CONTROL] Server disconnected");
         if (*sock >= 0) {
-        shutdown(*sock, SHUT_RDWR);
-        close(*sock);
-        *sock = -1;
-    }
+            shutdown(*sock, SHUT_RDWR);
+            close(*sock);
+            *sock = -1;
+        }
         *sock = -1;
     }
 }
@@ -192,10 +207,6 @@ static int connect_tcp(const char* ip, uint16_t port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
 
-    //add flags to allow timeout
-    int flags = fcntl(sock, F_GETFL, 0);
-    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
-
     // Prepare address structure
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -209,7 +220,8 @@ static int connect_tcp(const char* ip, uint16_t port) {
     }
 
     // Attempt connection
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0)
+    {
         close(sock);
         return -1;
     }
@@ -273,7 +285,7 @@ static void video_thread_main(void* arg) {
     AppState* app = (AppState*)arg;
 
     static uint8_t nalBuf[MAX_NAL_SIZE];    //buffer for NAL data
-    static uint8_t connection_attempts = 0; //number of times connection has been attempted
+    uint8_t connection_attempts = 0;        //number of times connection has been attempted
 
     locked_printf(app, "[VIDEO] thread starting...\n");
     locked_printf(app, "[VIDEO] Connecting to %s:%d...\n", app->server_ip, VIDEO_PORT);
@@ -319,18 +331,8 @@ static void video_thread_main(void* arg) {
         uint32_t be_len = 0;
         int r = recv_all(app->video_sock, &be_len, 4);
         if (r <= 0) {
-            //check error code
-            if (errno == EWOULDBLOCK)
-            {
-                //no data available yet
-                svcSleepThread(20000000ULL); // 20 ms delay before going to next iteration
-                continue;
-            }
-            else
-            {
-                locked_printf(app, "[VIDEO] Connection closed while reading length.\n");
-                break;
-            }
+            locked_printf(app, "[VIDEO] Connection closed while reading length.\n");
+            break;
         }
 
         uint32_t nal_len = ntohl(be_len);
@@ -361,7 +363,7 @@ static void video_thread_main(void* arg) {
     //exit thread upon exiting loop
     app->video_connected = false;
     close_socket_safe(&app->video_sock);
-    locked_printf(app, "[VIDEO] Exiting video thread...\n");
+    return;
 }
 
 
@@ -376,9 +378,8 @@ int main(int argc, char* argv[])
     gfxInitDefault();
     consoleInit(GFX_BOTTOM, NULL); //print to bottom screen
 
-    
-    aptSetHomeAllowed(true);                    //make sure HOME is allowed
-    aptHook(&hookCookie, apt_callback, NULL);   //allow printing when app changes state
+    //make sure HOME is allowed
+    aptSetHomeAllowed(true);
 
     //initialize networking system
     static u32* socBuffer = NULL;
@@ -423,11 +424,15 @@ int main(int argc, char* argv[])
 
     //shared application state for video thread
     AppState appState;
+    aptHook(&hookCookie, apt_callback, &appState);      //allow recording data about state changes
     memset(&appState, 0, sizeof(appState));
     appState.running = true;
     appState.video_connected = false;
     appState.control_connected = false;
     appState.video_sock = -1;
+    appState.suspend_requested = false;
+    appState.exit_requested = false;
+    appState.console_alive = true;
     LightLock_Init(&appState.printLock);
 
     //handle video thread, but do not create until we know the ip
@@ -484,16 +489,16 @@ int main(int argc, char* argv[])
             appState.server_ip[sizeof(appState.server_ip) - 1] = '\0';
 
             //small delay to allow time for python to open video server
-            svcSleepThread(200000000ULL);
+            svcSleepThread(1000000000ULL);
 
             //start video thread
             videoThread = threadCreate(
                 video_thread_main,          //thread entry point
                 &appState,                  
                 VIDEO_THREAD_STACK_SIZE,
-                0x18,                       //priority
+                0x30,                       //priority
                 -2,                         //default CPU affinity (let system schedule it)
-                true                        //start immediately
+                false                       //joinable thread
             );
 
             if (!videoThread) {
@@ -515,6 +520,7 @@ int main(int argc, char* argv[])
             {
                 send_inputs(mask, &sock);
                 last_mask = mask;
+                printf("[CONTROL] Sending inputs!\n");
             }
         }
 
@@ -529,24 +535,34 @@ int main(int argc, char* argv[])
 
     //tell video thread to stop before shutting down sockets/servers
     appState.running = false;
+    appState.console_alive = false;
 
-    //close video socket
-    close_socket_safe(&appState.video_sock);
-
-    //wait for video thread to exit before shutting down network services
-    if (videoThread) {
-        threadJoin(videoThread, U64_MAX);
-        threadFree(videoThread);
-        videoThread = 0;
+    //wake the video thread if it's waiting on a live socket then let it close itself
+    if (appState.video_sock >= 0) 
+    {
+        shutdown(appState.video_sock, SHUT_RDWR);
     }
 
-    //shutdown networking services and exit app
+    //shutdown control socket
     if (sock >= 0)
     {
         shutdown(sock, SHUT_RDWR);
         close(sock);
         sock = -1;
     }
+
+    //wait for video thread to exit before shutting down network services
+    if (videoThread)
+    {
+        threadJoin(videoThread, U64_MAX);
+        threadFree(videoThread);
+        videoThread = 0;
+    }
+
+    //remove APT hook
+    aptUnhook(&hookCookie);
+
+    //tear down app services
     socExit();
     free(socBuffer);
     gfxExit();

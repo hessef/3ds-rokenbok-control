@@ -38,26 +38,42 @@ START4 = b"\x00\x00\x00\x01"
 
 #global variables
 global stream_proc
+stream_proc = None
+global stream_proc_active
+stream_proc_active = False
+global ser
+ser = None
 #==================================================
 
 
 #=========================HELPER FUNCTIONS=========================
-def shutdown(ser):
+def shutdown():
     """
     Handles graceful shutdown of daemon process and servers
     """
     global stream_proc
+    global stream_proc_active
+    global ser
 
     print("[CONTROL] Shutting down...")
 
     #shutdown serial connection
-    ser.close()
+    try:
+        if ser is not None and ser.is_open:
+            ser.close()
+    except Exception:
+        pass
 
-    if STREAM_VIDEO:
-        #shutdown daemon process
-        stream_proc.terminate()
-        time.sleep(0.25)
-        stream_proc.close()
+    if STREAM_VIDEO and stream_proc_active and stream_proc is not None:
+        try:
+            #shutdown daemon process
+            stream_proc.terminate()
+            time.sleep(0.25)
+            stream_proc.close()
+        except Exception:
+            pass
+    
+    stream_proc_active = False
 
     print("[CONTROL] Done!")
 
@@ -165,20 +181,30 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
 
 #=========================VIDEO SERVER PROCESS=========================
 def video_server_main():
+    global stream_proc_active
+
     #create TCP server socket
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", VIDEO_PORT))
+    srv.settimeout(0.5)
     srv.listen(1)
 
     print(f"[VIDEO] Listening on 0.0.0.0:{VIDEO_PORT}")
     print(f"[VIDEO] Waiting for client...")
 
-    conn, addr = srv.accept()
+    #loop to keep from blocking
+    while True:
+        try:
+            conn, addr = srv.accept()
+            break
+        except socket.timeout:
+            continue
+        
     print(f"[VIDEO] Client connected from {addr}")
 
     #conduct handshake, like a true gentleman
-    hello = conn.recv(6) #5 bytes, expects 'YOINK'
+    hello = conn.recv(6) #6 bytes, expects 'YOINK'
     if hello != b"YOINK\n":
         print(f"[VIDEO] Bad handshake: got {hello!r}, expected b'YOINK'")
         conn.close()
@@ -224,18 +250,22 @@ def video_server_main():
             except OSError as e:
                 print(f"[VIDEO] client connection closed: {e}")
                 break
-                
+    except KeyboardInterrupt:
+        print("Keyboard interrupt!")            
     finally:
         #Cleanup
         print("[VIDEO] Initiating cleanup...")
         conn.close()
         srv.close()
         proc.kill()
+        stream_proc_active = False
         print("[VIDEO] Clean shutdown.")
 #==================================================
 
 def main():
     global stream_proc
+    global stream_proc_active
+    global ser
 
     # Open serial connection to Arduino
     try:
@@ -255,20 +285,32 @@ def main():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((HOST, PORT))
         s.listen(1)
+        s.settimeout(0.5)
         print(f"[CONTROL] Listening on {HOST}:{PORT} ...")
 
-        conn, addr = s.accept()
+        #loop to prevent listening from keeping app open
+        while True:
+            try:
+                conn, addr = s.accept()
+                break
+            except socket.timeout:
+                continue
         with conn:
             print(f"[CONTROL] Client connected from {addr}")
 
             #control handshake, as is right and just
-            hello = conn.recv(1024)
+            while True:
+                try:
+                    hello = conn.recv(1024)
+                    break
+                except socket.timeout:
+                    continue
             if hello != b"GREETINGS\n":
                 print(f"[CONTROL] Bad handshake: got {hello!r}, expected b'GREETINGS'")
                 conn.close()
                 return
 
-            conn.sendall(b"WHORE\n")
+            conn.sendall(b"WHORE")
 
             running = True
             last_command_sent = None
@@ -279,6 +321,7 @@ def main():
                                 daemon=True,
                                 name="VideoProc")
                 stream_proc.start()
+                stream_proc_active = True
 
             try:
                 while running:
@@ -310,7 +353,7 @@ def main():
 
             finally:
                 try:
-                    shutdown(ser)
+                    shutdown()
                 except Exception:
                     pass
 
@@ -318,4 +361,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        shutdown()
+        print("\nShutting down...")

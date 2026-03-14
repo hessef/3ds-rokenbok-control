@@ -308,11 +308,10 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
         # Webcam input on Windows
         "-f", "dshow",
         "-video_size", "640x480",
-        "-framerate", "30",
+        "-framerate", FPS,
         "-i", f"video={device_name}",
 
         "-vf", vf,
-        "-r", FPS,
 
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
@@ -328,7 +327,7 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
         "pipe:1",
     ]
 
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
 #==================================================
 
 
@@ -359,6 +358,7 @@ def video_server_main(shared_video_state):
         while True:
             try:
                 conn, addr = srv.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) #reduce latency
                 break
             except socket.timeout:
                 continue

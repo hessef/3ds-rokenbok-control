@@ -1,0 +1,43 @@
+To get FFmpeg to work on the 3ds, you need to download the FFmpeg 6.1 source code, then disable everything except
+exactly what you need, and enforce some c flags. Also, this needs to be done from the Msys2 console in order to install
+it into devkitPro properly. The specific commands I used were:
+
+1. Copy git repo 
+git clone --branch n6.1.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-3ds
+
+2. Enter ffmpeg-3ds directory
+cd ffmpeg-3ds
+
+3. Configure the minimum build (change what you re-enable to suit your project needs)
+./configure \
+  --enable-cross-compile \
+  --cross-prefix=/c/devkitPro/devkitARM/bin/arm-none-eabi- \
+  --prefix=/c/devkitPro/portlibs/3ds \
+  --arch=arm \
+  --cpu=armv6k \
+  --target-os=none \
+  --disable-everything \
+  --disable-programs \
+  --disable-doc \
+  --disable-debug \
+  --disable-asm \
+  --enable-avcodec \
+  --enable-avutil \
+  --enable-parser=h264 \
+  --enable-decoder=h264
+
+4. Compile your custom FFmpeg version
+make -j8
+
+5. Install it to devkitPro
+make install
+
+Once it is installed, it will appear in the portlibs folder, so make sure to add that to your include paths for your
+IDE and makefile. Also, it requires symbols from math library, and library order matters.
+So ensure you place -lm after all your FFmpeg libraries. 
+
+Also, please note that this does NOT use the New Nintendo 3DS/New Nintendo 2DS MVD (hardware decoder). This does
+software decoding. According to the github repo for Video_player_for_3DS
+(https://github.com/Core-2-Extreme/Video_player_for_3DS)
+this can get up to 30FPS at 800x240 resolution in software, but I found that it was bottlenecked by my streaming
+setup so I have it decoding a 400x240@20 stream. 

@@ -29,8 +29,8 @@ VIDEO_PORT = 6000   #for streaming video
 
 #video streaming
 WEBCAM = "c922 Pro Stream Webcam"
-BITRATE = "1200k"
-FPS = "30"
+BITRATE = "500k"
+FPS = "20"
 MAX_ROLLING_BUFFER = 2 * 1024 * 1024  # 2 MiB
 
 # H.264 start codes (Annex B). NAL units are delimited by one of these.
@@ -224,7 +224,7 @@ def shutdown():
     except Exception:
         pass
 
-    if STREAM_VIDEO and stream_proc_active and stream_proc is not None:
+    if STREAM_VIDEO and stream_proc is not None:
         cleanup_video_process()
     
     print("[CONTROL] Done!")
@@ -307,9 +307,9 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
 
         # Webcam input on Windows
         "-f", "dshow",
-        "-i", f"video={device_name}",
         "-video_size", "640x480",
         "-framerate", "30",
+        "-i", f"video={device_name}",
 
         "-vf", vf,
         "-r", FPS,
@@ -556,7 +556,7 @@ def main():
                     time.sleep(1.0 / SEND_RATE_HZ)
             except KeyboardInterrupt:
                 print("[CONTROL] Keyboard interrupt.\n")
-                
+
             finally:
                 try:
                     shutdown()

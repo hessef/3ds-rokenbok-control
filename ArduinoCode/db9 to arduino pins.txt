@@ -1,0 +1,7 @@
+DB9 Wire    Signal  Arduino
+
+yellow (5) - GND  - GND
+orange (4) - DATA - 8
+red (3)    - CLK  - 4
+brown (2)  - Sync - 2
+black (1)  - VCC  - 3

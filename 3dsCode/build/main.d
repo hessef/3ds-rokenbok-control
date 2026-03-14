@@ -86,7 +86,48 @@ main.o: C:/Users/there/Documents/RokenbokControl/3dsCode/source/main.c \
  C:/devkitPro/libctru-master/libctru/include/3ds/font.h \
  C:/devkitPro/libctru-master/libctru/include/3ds/gdbhio_dev.h \
  C:/devkitPro/libctru-master/libctru/include/3ds/3dslink.h \
- C:/devkitPro/libctru-master/libctru/include/arpa/inet.h
+ C:/devkitPro/libctru-master/libctru/include/arpa/inet.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/avcodec.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/samplefmt.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/attributes.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/avutil.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/common.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/attributes.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/error.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/macros.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/avconfig.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/mem.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/rational.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/version.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/mathematics.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/intfloat.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/log.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/pixfmt.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/buffer.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/channel_layout.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/dict.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/frame.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/avutil.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/buffer.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/channel_layout.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/dict.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/samplefmt.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/log.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/pixfmt.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/rational.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/codec.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/hwcontext.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/frame.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/codec_id.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/version_major.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/version_major.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/codec_id.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/defs.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/packet.h \
+ C:/devkitPro/portlibs/3ds/include/libavutil/version.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/version.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/codec_desc.h \
+ C:/devkitPro/portlibs/3ds/include/libavcodec/codec_par.h
 C:/devkitPro/libctru-master/libctru/include/3ds.h:
 C:/devkitPro/libctru-master/libctru/include/3ds/types.h:
 C:/devkitPro/libctru-master/libctru/include/3ds/result.h:
@@ -175,3 +216,44 @@ C:/devkitPro/libctru-master/libctru/include/3ds/font.h:
 C:/devkitPro/libctru-master/libctru/include/3ds/gdbhio_dev.h:
 C:/devkitPro/libctru-master/libctru/include/3ds/3dslink.h:
 C:/devkitPro/libctru-master/libctru/include/arpa/inet.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/avcodec.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/samplefmt.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/attributes.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/avutil.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/common.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/attributes.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/error.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/macros.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/avconfig.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/mem.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/rational.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/version.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/mathematics.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/intfloat.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/log.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/pixfmt.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/buffer.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/channel_layout.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/dict.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/frame.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/avutil.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/buffer.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/channel_layout.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/dict.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/samplefmt.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/log.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/pixfmt.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/rational.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/codec.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/hwcontext.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/frame.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/codec_id.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/version_major.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/version_major.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/codec_id.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/defs.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/packet.h:
+C:/devkitPro/portlibs/3ds/include/libavutil/version.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/version.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/codec_desc.h:
+C:/devkitPro/portlibs/3ds/include/libavcodec/codec_par.h:

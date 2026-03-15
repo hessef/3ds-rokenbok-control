@@ -306,10 +306,10 @@ def ffmpeg_h264_stream_webcam(device_name: str) -> subprocess.Popen:
         "-loglevel", "error",
 
         # Webcam input on Windows
-        "-f", "dshow",
+        "-f", "dshow", #replace dshow with v4l2 on raspberry pi
         "-video_size", "640x480",
         "-framerate", FPS,
-        "-i", f"video={device_name}",
+        "-i", f"video={device_name}", #replace device name with /dev/video0 on raspberry pi
 
         "-vf", vf,
 
